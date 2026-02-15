@@ -2,69 +2,87 @@ import chromadb
 from chromadb.config import Settings
 from core.config import CHROMA_PERSIST_DIR
 from indexing.embeddings import embed_text, embed_batch
+from indexing.chunker import chunk_text
 
 _client = None
 _collection = None
+BATCH_SIZE = 500
 
 def get_chroma_collection():
     global _client, _collection
     if _client is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        _client = chromadb.PersistentClient(
+            path=CHROMA_PERSIST_DIR,
+            settings=Settings(anonymized_telemetry=False)
+        )
         _collection = _client.get_or_create_collection(
             name="documents",
-            embedding_function=None  # We'll provide our own embeddings
+            embedding_function=None
         )
     return _collection
 
 def add_document(doc_id: str, text: str, metadata: dict = None):
-    """Split document into sentence chunks and add to vector store."""
-    from processing.stripper import split_sentences
-    sentences = split_sentences(text)
-    if not sentences:
+    """Split document into chunks and add to vector store."""
+    chunks = chunk_text(text)
+    if not chunks:
+        print(f"No chunks generated for {doc_id}")
         return
     
-    embeddings = embed_batch(sentences)
-    metadatas = [{"doc_id": doc_id, "source": metadata.get("source", ""), "sentence": s} for s in sentences]
+    # Generate embeddings
+    try:
+        embeddings = embed_batch(chunks)
+    except Exception as e:
+        print(f"Embedding failed: {e}")
+        return
+    
+    ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
+    metadatas = [
+        {
+            "doc_id": doc_id,
+            "source": metadata.get("source", "") if metadata else "",
+            "chunk_index": i,
+            "text": chunk   # store for debugging
+        }
+        for i, chunk in enumerate(chunks)
+    ]
     
     collection = get_chroma_collection()
-    collection.add(
-        documents=sentences,
-        embeddings=embeddings,
-        ids=[f"{doc_id}_{i}" for i in range(len(sentences))],
-        metadatas=metadatas
-    )
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch_ids = ids[i:i+BATCH_SIZE]
+        batch_embeddings = embeddings[i:i+BATCH_SIZE]
+        batch_chunks = chunks[i:i+BATCH_SIZE]
+        batch_metadatas = metadatas[i:i+BATCH_SIZE]
+        collection.add(
+            documents=batch_chunks,
+            embeddings=batch_embeddings,
+            ids=batch_ids,
+            metadatas=batch_metadatas
+        )
+    print(f"Added {len(chunks)} chunks from '{doc_id}'.")
 
-def retrieve_documents(query: str, top_k: int = 5):
-    """Retrieve top‑k full documents by aggregating sentence scores."""
+def retrieve_chunks(query: str, top_k: int = 5):
+    """Retrieve top‑k chunks from vector store."""
     query_emb = embed_text(query)
     collection = get_chroma_collection()
     results = collection.query(
         query_embeddings=[query_emb],
-        n_results=top_k * 5,  # over‑fetch to get full docs
+        n_results=top_k,
         include=["documents", "metadatas", "distances"]
     )
     
-    # Group by doc_id
-    doc_sentences = {}
-    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
-        doc_id = meta["doc_id"]
-        if doc_id not in doc_sentences:
-            doc_sentences[doc_id] = {"sentences": [], "scores": [], "source": meta["source"]}
-        doc_sentences[doc_id]["sentences"].append(doc)
-        doc_sentences[doc_id]["scores"].append(1 - dist)  # cosine similarity
-    
-    # Build full document texts
-    retrieved = []
-    for doc_id, data in doc_sentences.items():
-        full_text = " ".join(data["sentences"])
-        avg_score = sum(data["scores"]) / len(data["scores"])
-        retrieved.append({
+    chunks = []
+    for doc_id, doc, meta, dist in zip(
+        results["ids"][0],
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0]
+    ):
+        chunks.append({
             "id": doc_id,
-            "text": full_text,
-            "source": data["source"],
-            "relevance": avg_score
+            "text": doc,
+            "source": meta.get("source", "unknown"),
+            "doc_id": meta.get("doc_id", ""),
+            "chunk_index": meta.get("chunk_index", 0),
+            "relevance": 1 - dist
         })
-    
-    # Sort by aggregated relevance and return top_k
-    retrieved.sort(key=lambda x: x["relevance"], reverse=True)
-    return retrieved[:top_k]
+    return chunks
