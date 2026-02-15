@@ -45,10 +45,9 @@ The pipeline operates in five main phases:
 ---
 ##  Architecture
 
-```
+
 ![CRAG Pipeline Flowchart](CRAG.jpg)
 
-```
 
 ---
 
