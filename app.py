@@ -1,11 +1,13 @@
 import streamlit as st
 import tempfile
 import os
+import re
 from pathlib import Path
 from indexing.document_loader import load_document
 from indexing.vector_store import add_document
 from pipeline.orchestrator import answer_query
 from utils.helpers import format_sources
+
 
 st.set_page_config(page_title="Groq RAG with Thresholds", layout="wide")
 st.markdown("""
@@ -29,6 +31,17 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+def split_response(full_response: str):
+    """Separate thinking (inside <think> tags) from the final answer."""
+    think_match = re.search(r"<think>(.*?)</think>", full_response, re.DOTALL)
+    if think_match:
+        thinking = think_match.group(1).strip()
+        answer = re.sub(r"<think>.*?</think>", "", full_response, flags=re.DOTALL).strip()
+    else:
+        thinking = None
+        answer = full_response.strip()
+    return thinking, answer
 
 # ----------------------------
 #  Session state initialisation
@@ -106,11 +119,19 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         # Run pipeline
         response_stream, sources, trace = answer_query(prompt)
         
-        # Stream output
+        # Stream output (raw, with think tags)
         for chunk in response_stream:
             full_response += chunk
             message_placeholder.markdown(full_response + "▌")
-        message_placeholder.markdown(full_response)
+        
+        # Post-process to separate thinking and answer
+        thinking, clean_answer = split_response(full_response)
+        message_placeholder.markdown(clean_answer)
+        
+        # Show thinking in expander if present
+        if thinking:
+            with st.expander("🧠 Model Reasoning (click to expand)"):
+                st.markdown(thinking)
         
         # Show sources
         if sources:

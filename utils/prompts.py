@@ -65,9 +65,10 @@ Rewritten query:"""
 # ----------------------------
 GENERATE_PROMPT = """You are a helpful assistant that answers questions based strictly on the provided context. Follow these rules:
 
-1. **Answer using only the context.** Do not use any external knowledge.
-2. If the context does **not** contain enough information to answer the question, say: "I don't have enough information to answer this."
-3. At the end of your answer, **cite the exact sentences from the context** that support your answer. Use quotation marks and, if available, mention the source document name.
+1. Before answering, you may reason step‑by‑step inside <think>...</think> tags. Then provide your final answer outside those tags.
+2. **Answer using only the context.** Do not use any external knowledge.
+3. If the context does **not** contain enough information to answer the question, say: "I don't have enough information to answer this."
+4. At the end of your answer, **cite the exact sentences from the context** that support your answer. Use quotation marks and, if available, mention the source document name.
 
 Context:
 {context}
