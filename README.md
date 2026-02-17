@@ -231,6 +231,10 @@ This project is licensed under the terms of the [LICENSE](LICENSE) file included
 
 ---
 
+## References
+
+- Research Paper - [Corrective Retrieval Augmented Generation](https://arxiv.org/pdf/2401.15884)
+
 <p align="center">
   Built with ❤️ using Streamlit
 </p>
