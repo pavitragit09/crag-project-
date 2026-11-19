@@ -25,15 +25,9 @@ def add_document(doc_id: str, text: str, metadata: dict = None):
     """Split document into chunks and add to vector store."""
     chunks = chunk_text(text)
     if not chunks:
-        print(f"No chunks generated for {doc_id}")
-        return
+        raise ValueError(f"No text could be extracted from '{doc_id}'.")
     
-    # Generate embeddings
-    try:
-        embeddings = embed_batch(chunks)
-    except Exception as e:
-        print(f"Embedding failed: {e}")
-        return
+    embeddings = embed_batch(chunks)
     
     ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
     metadatas = [
@@ -41,32 +35,44 @@ def add_document(doc_id: str, text: str, metadata: dict = None):
             "doc_id": doc_id,
             "source": metadata.get("source", "") if metadata else "",
             "chunk_index": i,
-            "text": chunk   # store for debugging
         }
         for i, chunk in enumerate(chunks)
     ]
     
     collection = get_chroma_collection()
+    existing_ids = collection.get(
+        where={"doc_id": doc_id},
+        include=["metadatas"],
+    )["ids"]
+    stale_ids = sorted(set(existing_ids) - set(ids))
+    if stale_ids:
+        collection.delete(ids=stale_ids)
+
     for i in range(0, len(chunks), BATCH_SIZE):
         batch_ids = ids[i:i+BATCH_SIZE]
         batch_embeddings = embeddings[i:i+BATCH_SIZE]
         batch_chunks = chunks[i:i+BATCH_SIZE]
         batch_metadatas = metadatas[i:i+BATCH_SIZE]
-        collection.add(
+        collection.upsert(
             documents=batch_chunks,
             embeddings=batch_embeddings,
             ids=batch_ids,
             metadatas=batch_metadatas
         )
     print(f"Added {len(chunks)} chunks from '{doc_id}'.")
+    return len(chunks)
 
 def retrieve_chunks(query: str, top_k: int = 5):
     """Retrieve top‑k chunks from vector store."""
-    query_emb = embed_text(query)
     collection = get_chroma_collection()
+    available_count = collection.count()
+    if top_k <= 0 or available_count == 0:
+        return []
+
+    query_emb = embed_text(query)
     results = collection.query(
         query_embeddings=[query_emb],
-        n_results=top_k,
+        n_results=min(top_k, available_count),
         include=["documents", "metadatas", "distances"]
     )
     

@@ -1,6 +1,7 @@
 from core.groq_client import get_groq_client
-from core.config import EVALUATOR_MODEL, STRIP_THRESHOLD
+from core.config import GENERATOR_MODEL, STRIP_THRESHOLD
 from utils.prompts import FILTER_PROMPT
+from utils.helpers import parse_relevance_score
 
 def score_strip(query: str, strip: str) -> float:
     """Use LLM to rate relevance of a single strip (0‑10)."""
@@ -8,16 +9,13 @@ def score_strip(query: str, strip: str) -> float:
     prompt = FILTER_PROMPT.format(query=query, strip=strip)
     
     response = client.chat.completions.create(
-        model=EVALUATOR_MODEL,
+        model=GENERATOR_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_tokens=10
+        max_tokens=256,
+        extra_body={"reasoning_effort": "low", "include_reasoning": False},
     )
-    try:
-        score = float(response.choices[0].message.content.strip())
-        return max(0.0, min(10.0, score))
-    except:
-        return 0.0
+    return parse_relevance_score(response.choices[0].message.content)
 
 def filter_strips(query: str, strips: list) -> list:
     """Keep only strips with score ≥ STRIP_THRESHOLD."""

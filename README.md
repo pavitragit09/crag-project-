@@ -38,9 +38,9 @@ The pipeline operates in five main phases:
 |-------|-------------|
 | **Document Ingestion** | Uploaded files (PDF, DOCX, TXT) are parsed, split into overlapping chunks, embedded, and stored in a vector database |
 | **Query Processing** | A user question triggers retrieval of the most relevant chunks from the vector store |
-| **Evaluation & Classification** | Each retrieved chunk is scored by an LLM `llama-3.1-8b-instant` (0–10). Based on configurable thresholds (UT, LT), results are classified as `Correct`, `Ambiguous`, or `Incorrect` |
+| **Evaluation & Classification** | The configured Groq model scores each retrieved chunk (0–10). Based on configurable thresholds (UT, LT), results are classified as `Correct`, `Ambiguous`, or `Incorrect` |
 | **Refinement & Fallback** | Chunks are refined at the sentence level; web search is triggered when local knowledge is insufficient |
-| **Generation** | The final context is fed to `qwen/qwen3-32b`, which produces an answer with citations |
+| **Generation** | The final context is fed to `openai/gpt-oss-120b`, which produces an answer with citations |
 
 ---
 ##  Architecture
@@ -102,8 +102,8 @@ GROQ_API_KEY=your_groq_api_key_here
 TAVILY_API_KEY=your_tavily_api_key_here
 
 # Thresholds (tune these as needed)
-UPPER_THRESHOLD=8.0      # UT – Correct if score ≥ UT
-LOWER_THRESHOLD=3.0      # LT – Incorrect if score ≤ LT
+UPPER_THRESHOLD=0.7      # UT – Correct if normalized chunk score ≥ UT
+LOWER_THRESHOLD=0.4      # LT – Incorrect if normalized chunk score ≤ LT
 STRIP_THRESHOLD=5.0      # Minimum relevance to keep a sentence strip
 
 # Retrieval settings
@@ -111,8 +111,7 @@ TOP_K_DOCUMENTS=5        # Number of documents to retrieve from vector store
 TOP_K_WEB_RESULTS=3      # Number of web results to fetch
 
 # Model names
-GENERATOR_MODEL=qwen/qwen3-32b
-EVALUATOR_MODEL=llama-3.1-8b-instant
+GENERATOR_MODEL=openai/gpt-oss-120b
 ```
 
 ### Running the App
@@ -141,13 +140,13 @@ A user question is embedded and used to query ChromaDB. The top-`k` most similar
 
 ### 3. Evaluation & Classification
 
-Each retrieved chunk is scored **0–10** by `llama-3.1-8b-instant` using a detailed relevance rubric. The maximum score across all chunks determines classification:
+Each retrieved chunk is scored **0–10** by the configured Groq model using a detailed relevance rubric, then normalized to **0.0–1.0** for routing. Sentence-level strip scores remain on the **0–10** scale. The maximum normalized chunk score determines classification:
 
 | Condition | Classification |
 |-----------|---------------|
 | `max_score ≥ UPPER_THRESHOLD` | **Correct** — local docs are sufficient |
 | Any score between `LT` and `UT` | **Ambiguous** — local docs partially relevant |
-| All scores `< LOWER_THRESHOLD` | **Incorrect** — local docs insufficient |
+| No score reaches UT and all scores are `≤ LOWER_THRESHOLD` | **Incorrect** — local docs insufficient |
 
 ### 4. Refinement & Fallback
 
@@ -169,7 +168,7 @@ Each retrieved chunk is scored **0–10** by `llama-3.1-8b-instant` using a deta
 
 ### 5. Generation
 
-The final merged context (local + web) is passed to `qwen/qwen3-32b` with a prompt that:
+The final merged context (local + web) is passed to `openai/gpt-oss-120b` with a prompt that:
 - Restricts the model to answer **only from the provided context**
 - **Forces citation** of exact supporting sentences
 - Falls back to "I don't have enough information" if context is insufficient
@@ -182,13 +181,12 @@ The response is streamed live in the Streamlit UI.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UPPER_THRESHOLD` | `8.0` | Minimum score to classify a chunk as **Correct** |
-| `LOWER_THRESHOLD` | `3.0` | Maximum score to classify a chunk as **Incorrect** |
+| `UPPER_THRESHOLD` | `0.7` | Minimum normalized chunk score to classify evidence as **Correct** |
+| `LOWER_THRESHOLD` | `0.4` | Scores at or below this normalized chunk score are **Incorrect** when no chunk meets UT |
 | `STRIP_THRESHOLD` | `5.0` | Minimum sentence score to keep during refinement |
 | `TOP_K_DOCUMENTS` | `5` | Number of chunks to retrieve from ChromaDB |
 | `TOP_K_WEB_RESULTS` | `3` | Number of Tavily web results to fetch |
-| `GENERATOR_MODEL` | `qwen/qwen3-32b` | Model for final answer generation |
-| `EVALUATOR_MODEL` | `llama-3.1-8b-instant` | Model for scoring and query rewriting |
+| `GENERATOR_MODEL` | `openai/gpt-oss-120b` | Shared Groq model for scoring, query rewriting, and answer generation |
 
 > **Tip:** Raise `UPPER_THRESHOLD` to make the system more conservative before accepting local documents. Lower `STRIP_THRESHOLD` to keep more sentences during refinement.
 
@@ -215,7 +213,7 @@ CRAG employs five complementary strategies to minimise hallucinations:
 | Component | Technology |
 |-----------|-----------|
 | **UI** | [Streamlit](https://streamlit.io) |
-| **LLM Inference** | [Groq](https://groq.com) (`llama-3.1-8b-instant`, `qwen/qwen3-32b`) |
+| **LLM Inference** | [Groq](https://groq.com) (`openai/gpt-oss-120b` for scoring, rewriting, and generation) |
 | **Embeddings** | [sentence-transformers](https://www.sbert.net/) (`all-MiniLM-L6-v2`) |
 | **Vector Store** | [ChromaDB](https://www.trychroma.com/) (persistent) |
 | **Web Search** | [Tavily](https://tavily.com) |

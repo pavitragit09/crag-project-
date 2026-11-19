@@ -6,11 +6,17 @@ _client = None
 def get_tavily_client():
     global _client
     if _client is None:
+        if not TAVILY_API_KEY:
+            raise RuntimeError("TAVILY_API_KEY is missing. Add it to the project .env file.")
         _client = TavilyClient(api_key=TAVILY_API_KEY)
     return _client
 
 def web_search(query: str):
     """Fetch web results and return as list of documents."""
+    query = query.strip()
+    if not query:
+        raise ValueError("Web search needs a non-empty query.")
+
     client = get_tavily_client()
     response = client.search(query, search_depth="basic", max_results=TOP_K_WEB_RESULTS)
     

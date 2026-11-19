@@ -15,6 +15,7 @@ build/
 
 # Vector store persistence
 chroma_data/
+.cache/
 
 # IDE
 .vscode/

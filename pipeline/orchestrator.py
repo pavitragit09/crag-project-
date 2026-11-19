@@ -8,18 +8,26 @@ from processing.merger import merge_kept_strips
 from generation.generator import generate_answer
 from utils.prompts import REWRITE_PROMPT
 from core.groq_client import get_groq_client
-from core.config import LOWER_THRESHOLD, UPPER_THRESHOLD, EVALUATOR_MODEL
+from core.config import LOWER_THRESHOLD, UPPER_THRESHOLD, GENERATOR_MODEL
 
 def rewrite_query(query: str) -> str:
+    original_query = query.strip()
+    if not original_query:
+        raise ValueError("Please enter a non-empty question.")
+
     client = get_groq_client()
-    prompt = REWRITE_PROMPT.format(query=query)
+    prompt = REWRITE_PROMPT.format(query=original_query)
     response = client.chat.completions.create(
-        model=EVALUATOR_MODEL,
+        model=GENERATOR_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
-        max_tokens=100
+        max_tokens=256
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content or ""
+    rewritten_query = content.strip()
+    # A reasoning model can occasionally return an empty final content field.
+    # Keep the original question so Tavily never receives a missing query.
+    return rewritten_query or original_query
 
 def refine_document(doc: dict, query: str, doc_score: float = None):
     """Split, filter, merge a single chunk."""
@@ -27,7 +35,7 @@ def refine_document(doc: dict, query: str, doc_score: float = None):
     kept = filter_strips(query, strips)
     if not kept:
         # If chunk is highly relevant but no strips passed, keep entire chunk
-        if doc_score and doc_score >= UPPER_THRESHOLD:
+        if doc_score is not None and doc_score >= UPPER_THRESHOLD:
             return {
                 "text": doc["text"],
                 "source": doc.get("source", doc.get("url", "unknown")),
@@ -77,8 +85,12 @@ def answer_query(query: str):
 
     # 4. Conditional refinement & web fallback
     if classification == "correct":
-        best_chunks = [chunk for chunk, score in chunk_scores if score >= UPPER_THRESHOLD]
-        for chunk in best_chunks[:1]:  # take top 1
+        best_chunks = sorted(
+            [(chunk, score) for chunk, score in chunk_scores if score >= UPPER_THRESHOLD],
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        for chunk, score in best_chunks[:1]:  # refine the highest-scoring chunk
             refined = refine_document(chunk, query, score)
             if refined:
                 context_pieces.append(refined["text"])
@@ -93,8 +105,11 @@ def answer_query(query: str):
                 })
 
     elif classification == "ambiguous":
-        useful_local = [chunk for chunk, score in chunk_scores if score > LOWER_THRESHOLD]
-        for chunk in useful_local:
+        useful_local = [
+            (chunk, score) for chunk, score in chunk_scores
+            if score > LOWER_THRESHOLD
+        ]
+        for chunk, score in useful_local:
             refined = refine_document(chunk, query, score)
             if refined:
                 context_pieces.append(refined["text"])

@@ -7,12 +7,12 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
         return []
     
     import nltk
+    import re
     try:
-        nltk.data.find("tokenizers/punkt")
+        sentences = nltk.sent_tokenize(text)
     except LookupError:
-        nltk.download("punkt")
-    
-    sentences = nltk.sent_tokenize(text)
+        # Avoid blocking document indexing on a network download.
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
     chunks = []
     current_chunk = ""
     

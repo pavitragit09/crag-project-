@@ -7,9 +7,10 @@ from indexing.document_loader import load_document
 from indexing.vector_store import add_document
 from pipeline.orchestrator import answer_query
 from utils.helpers import format_sources
+from core.config import UPPER_THRESHOLD, LOWER_THRESHOLD, STRIP_THRESHOLD
 
 
-st.set_page_config(page_title="Groq RAG with Thresholds", layout="wide")
+st.set_page_config(page_title="Corrective RAG (CRAG)", layout="wide")
 st.markdown("""
 <style>
     /* User avatar */
@@ -63,49 +64,81 @@ uploaded_files = st.sidebar.file_uploader(
 
 if uploaded_files and st.sidebar.button("Index Documents"):
     with st.sidebar.status("Indexing documents...", expanded=True) as status:
-        for uploaded_file in uploaded_files:
-            # Save to temporary file
-            suffix = Path(uploaded_file.name).suffix
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-            
-            # Extract text
-            text = load_document(tmp_path)
-            os.unlink(tmp_path)  # clean up
-            
-            # Add to vector store (sentence‑level chunking)
-            add_document(
-                doc_id=uploaded_file.name,
-                text=text,
-                metadata={"source": uploaded_file.name}
-            )
-        status.update(label="Indexing complete!", state="complete")
-        st.session_state.vectorstore_ready = True
+        try:
+            indexed_chunks = 0
+            for uploaded_file in uploaded_files:
+                suffix = Path(uploaded_file.name).suffix
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
+
+                    text = load_document(tmp_path)
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+
+                indexed_chunks += add_document(
+                    doc_id=uploaded_file.name,
+                    text=text,
+                    metadata={"source": uploaded_file.name},
+                )
+
+            status.update(label=f"Indexed {indexed_chunks} chunks.", state="complete")
+            st.session_state.vectorstore_ready = indexed_chunks > 0
+        except Exception as exc:
+            status.update(label="Document indexing failed.", state="error")
+            st.sidebar.error(str(exc))
 
 st.sidebar.divider()
 st.sidebar.write("**Current thresholds**")
 st.sidebar.info(
-    f"UT: {os.getenv('UPPER_THRESHOLD', 8.0)}  \n"
-    f"LT: {os.getenv('LOWER_THRESHOLD', 3.0)}  \n"
-    f"Strip: {os.getenv('STRIP_THRESHOLD', 5.0)}"
+    f"UT : {UPPER_THRESHOLD:0.7}  \n"
+    f"LT : {LOWER_THRESHOLD:0.4}  \n"
+    f"Strip (sentence score 0-10): {STRIP_THRESHOLD:g}"
 )
 
 # ----------------------------
-#  Main Chat Interface
+#  Main App Views
 # ----------------------------
-st.title("💬 Corrective RAG (CRAG)")
+active_view = st.radio(
+    "App section",
+    ["💬 Ask Documents", "📊 Benchmark Metrics"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_view",
+)
 
-# Display chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "sources" in msg:
-            with st.expander("Sources"):
-                st.text(msg["sources"])
+prompt = None
+if active_view == "💬 Ask Documents":
+    st.title("💬 Corrective RAG (CRAG)")
 
-# Chat input
-if prompt := st.chat_input("Ask a question about your documents..."):
+    # Display chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if "sources" in msg:
+                with st.expander("Sources"):
+                    st.text(msg["sources"])
+
+    # Keep chat_input at the page level: Streamlit does not allow it inside tabs.
+    prompt = st.chat_input("Ask a question about your documents...")
+else:
+    st.title("Baseline RAG vs CRAG")
+    st.caption("Reported results on the project's 12-question benchmark; these are static report figures, not live measurements.")
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Average correctness", "0.97 baseline", help="Baseline RAG: 0.97; CRAG: 0.86")
+    metric_cols[1].metric("Average faithfulness", "0.71 baseline", help="Baseline RAG: 0.71; CRAG: 0.75")
+    metric_cols[2].metric("Average latency", "4.97 s baseline", help="Baseline RAG: 4.97 s; CRAG: 12.19 s")
+    st.table({
+        "Metric": ["Average correctness", "Average faithfulness", "Average latency"],
+        "Baseline RAG": [0.97, 0.71, "4.97 s"],
+        "CRAG": [0.86, 0.75, "12.19 s"],
+    })
+    st.caption("In the reported results, CRAG improved faithfulness, while baseline RAG had higher correctness and lower latency.")
+
+if prompt:
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -116,13 +149,22 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         message_placeholder = st.empty()
         full_response = ""
         
-        # Run pipeline
-        response_stream, sources, trace = answer_query(prompt)
-        
-        # Stream output (raw, with think tags)
-        for chunk in response_stream:
-            full_response += chunk
-            message_placeholder.markdown(full_response + "▌")
+        # Run the retrieval and evaluation pipeline without exposing a traceback
+        # in the chat UI if a dependency or external service fails.
+        try:
+            response_stream, sources, trace = answer_query(prompt)
+            for chunk in response_stream:
+                full_response += chunk
+                message_placeholder.markdown(full_response + "▌")
+        except Exception as exc:
+            error_message = f"Could not process this question: {exc}"
+            message_placeholder.error(error_message)
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": error_message,
+                "sources": "No sources.",
+            })
+            st.stop()
         
         # Post-process to separate thinking and answer
         thinking, clean_answer = split_response(full_response)
@@ -182,4 +224,3 @@ if prompt := st.chat_input("Ask a question about your documents..."):
 
                 st.markdown("#### 📝 Final Context Preview")
                 st.text(trace.get("final_context", "No context generated."))
-
